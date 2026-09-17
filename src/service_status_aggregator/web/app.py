@@ -6,8 +6,10 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -47,6 +49,7 @@ class RuntimeState:
     poller_last_cycle_at: datetime | None = None
     poller_started: bool = False
     resolver: Resolver = system_resolver
+    poller: Any = None  # Poller instance once started; typed loosely to avoid an import cycle
 
     @property
     def uptime_seconds(self) -> int:
@@ -164,4 +167,42 @@ def create_app(state: RuntimeState) -> FastAPI:
             )
         return JSONResponse(row.to_dict(), status_code=201 if created else 200)
 
+    @app.get("/health")
+    async def health() -> Response:
+        checks: dict[str, str] = {}
+        ok = True
+
+        db_ok = await asyncio.to_thread(state.storage.ping)
+        db_dir = cfg.storage.db_path.parent
+        writable = os.access(db_dir, os.W_OK | os.X_OK)
+        if db_ok and writable:
+            checks["db"] = "ok"
+        else:
+            ok = False
+            checks["db"] = "unreachable" if not db_ok else f"directory not writable: {db_dir}"
+
+        if state.poller is not None:
+            poller_ok, detail = state.poller.healthy()
+        else:
+            poller_ok, detail = _poller_grace(state)
+        checks["poller"] = detail
+        ok = ok and poller_ok
+
+        checks["bind"] = state.bind_kind
+        body = {
+            "status": "ok" if ok else "degraded",
+            "version": __version__,
+            "uptime_seconds": state.uptime_seconds,
+            "checks": checks,
+        }
+        return JSONResponse(body, status_code=200 if ok else 503)
+
     return app
+
+
+def _poller_grace(state: RuntimeState) -> tuple[bool, str]:
+    """Readiness verdict when no poller has been attached (early startup)."""
+    limit = 2 * state.cfg.polling.interval_seconds
+    if state.uptime_seconds <= limit:
+        return True, "starting"
+    return False, "poller not started"
