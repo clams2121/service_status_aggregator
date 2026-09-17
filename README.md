@@ -45,27 +45,45 @@ you (browser over Tailscale) ──────────── GET / ──�
   recorded as unknown and drawn grey rather than stretching the last known
   colour across time nobody was watching.
 
-## Quick start
+## Install
 
-Pick one deployment path. Each installer creates a dedicated non-root user,
-generates the registration token, prints it **once**, and verifies the service
-answers on `/health` before finishing.
+On the machine that will run it (Ubuntu with Tailscale, the OpenClaw host):
 
-| Path | Command | Notes |
-|---|---|---|
-| systemd (recommended on the OpenClaw host) | `sudo deploy/systemd/install.sh` | Needs `uv` and systemd ≥ 250. Hardened unit, watchdog, encrypted token. |
-| Plain venv | `deploy/venv/install.sh` then `deploy/venv/run.sh` | No root. Everything stays inside the checkout (git-ignored). |
-| Docker | `sudo deploy/docker/install.sh` | Prompts for a storage directory. Host networking, read-only container. |
+```sh
+git clone https://github.com/clams2121/service_status_aggregator.git
+cd service_status_aggregator
+sudo ./install.sh
+```
 
-Then open `http://<tailscale-ip>:8720/`.
+That installs it as a hardened systemd service, creates the `svcstatus` user,
+generates the registration token and prints it **once** (save it in your
+password manager), starts the service, and waits until `/health` answers.
+When it finishes it prints the dashboard address, normally
+`http://<tailscale-ip>:8720/`.
 
-Defaults: port `8720`, check every `60 s` (allowed 10–600 s; 1–5 minutes is
-the intended range), stale after `900 s`, 90 days of history, day boundaries
-in `UTC` (set `[display].timezone` to your zone, e.g. `America/New_York`).
-All of it lives in one TOML file; see `config.example.toml` for every option
-with comments.
-`service-status-aggregator check-config --config <file>` reports every problem
-at once, and the service refuses to start on any of them.
+If `uv` is not installed the script offers to install it and asks first.
+
+Other ways to run it:
+
+| Command | What you get |
+|---|---|
+| `./install.sh --venv` | No root. Runs from this checkout; start it with `deploy/venv/run.sh`. |
+| `sudo ./install.sh --docker` | A read-only container with host networking. Prompts for a storage directory. |
+
+Re-running the same command after `git pull` upgrades in place and keeps your
+config, database and token. Then edit
+`/etc/service_status_aggregator/config.toml` if you want to change the check
+interval, timezone or thresholds, and `sudo systemctl restart
+service-status-aggregator`.
+
+### Defaults and configuration
+
+Port `8720`, check every `60 s` (allowed 10–600 s; 1–5 minutes is the
+intended range), stale after `900 s`, 90 days of history, day boundaries in
+`UTC` (set `[display].timezone` to your zone, e.g. `America/New_York`). All of
+it lives in one TOML file; see `config.example.toml` for every option with
+comments. `service-status-aggregator check-config --config <file>` reports
+every problem at once, and the service refuses to start on any of them.
 
 ## Registering a service
 
