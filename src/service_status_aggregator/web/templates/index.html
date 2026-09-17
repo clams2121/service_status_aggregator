@@ -34,10 +34,10 @@
         {{ s.row.name }}
         {% if s.row.source == 'self' %}<span class="tag">self</span>{% endif %}
       </td>
-      <td class="mono">{{ s.address }}</td>
+      <td class="mono addr">{{ s.address }}</td>
       <td><span class="badge {{ s.health }}">{{ s.health }}</span></td>
       <td class="num mono">{% if s.row.last_response_ms is not none %}{{ s.row.last_response_ms }} ms{% else %}&ndash;{% endif %}</td>
-      <td title="{{ s.checked_at_iso }}">{{ s.checked_ago }}</td>
+      <td class="when" title="{{ s.checked_at_iso }}">{{ s.checked_ago }}</td>
       <td title="last registered {{ s.registered_at_iso }} ({{ s.row.registration_count }}x)">
         <span class="badge {{ s.registration }}">{{ s.registration }}</span>
         <span class="muted">{{ s.registered_ago }}</span>

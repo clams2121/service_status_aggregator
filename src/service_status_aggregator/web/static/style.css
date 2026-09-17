@@ -30,11 +30,12 @@ main { padding: 16px; max-width: 1400px; margin: 0 auto; }
 .stat.up .n { color: var(--up); } .stat.down .n { color: var(--down); } .stat.stale .n { color: var(--stale); }
 .tablewrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th, td.name, td.num, td.addr, td.when { white-space: nowrap; }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 td.num, th.num { text-align: right; }
 td.name { font-weight: 600; }
-td.reason, td.path { white-space: normal; word-break: break-all; max-width: 320px; color: var(--muted); }
+td.reason, td.path { word-break: break-all; min-width: 160px; color: var(--muted); }
 tr.group-down td.name { color: var(--down); }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
 .badge.up { background: var(--up-bg); color: var(--up); }
