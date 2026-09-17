@@ -9,14 +9,17 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from service_status_aggregator import __version__
-from service_status_aggregator.config import Config
+from service_status_aggregator.config import Config, redacted_view
 from service_status_aggregator.models import (
     MAX_BODY_BYTES,
     RegistrationIn,
@@ -24,7 +27,10 @@ from service_status_aggregator.models import (
     check_target,
     system_resolver,
 )
-from service_status_aggregator.storage import SOURCE_REGISTER, Storage, utcnow
+from service_status_aggregator.storage import SOURCE_REGISTER, Storage, to_iso, utcnow
+from service_status_aggregator.web.views import build_views, summarise
+
+_HERE = Path(__file__).resolve().parent
 
 log = logging.getLogger("service_status_aggregator.web")
 
@@ -103,6 +109,32 @@ def create_app(state: RuntimeState) -> FastAPI:
     )
     app.state.runtime = state
     cfg = state.cfg
+    templates = Jinja2Templates(directory=str(_HERE / "templates"))
+    app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+
+    def base_context(page: str) -> dict[str, Any]:
+        warnings: list[str] = []
+        if not cfg.token_enabled:
+            warnings.append(
+                "Registration token is disabled: anyone who can reach this service can "
+                "register or overwrite entries. Set require_token = true and provide a token."
+            )
+        if state.bind_kind == "loopback":
+            warnings.append(
+                "No Tailscale IP was found; bound to 127.0.0.1 only. Reach this page through "
+                f"an SSH tunnel: ssh -L {cfg.server.port}:127.0.0.1:{cfg.server.port} <host>"
+            )
+        return {
+            "page": page,
+            "version": __version__,
+            "warnings": warnings,
+            "bind_ip": state.bind_ip,
+            "bind_kind": state.bind_kind,
+            "port": cfg.server.port,
+            "poll_interval": cfg.polling.interval_seconds,
+            "staleness": cfg.registration.staleness_seconds,
+            "now_iso": to_iso(utcnow()),
+        }
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -166,6 +198,35 @@ def create_app(state: RuntimeState) -> FastAPI:
                 "re-registered %s at %s (count=%d)", row.name, row.host, row.registration_count
             )
         return JSONResponse(row.to_dict(), status_code=201 if created else 200)
+
+    @app.get("/")
+    async def index(request: Request) -> Response:
+        rows = await asyncio.to_thread(state.storage.list_services)
+        views = build_views(rows, cfg.registration.staleness_seconds)
+        ctx = base_context("index") | {
+            "services": views,
+            "counts": summarise(views),
+            "refresh_seconds": max(10, int(cfg.polling.interval_seconds)),
+        }
+        return templates.TemplateResponse(request, "index.html", ctx)
+
+    @app.get("/api/services")
+    async def api_services() -> Response:
+        rows = await asyncio.to_thread(state.storage.list_services)
+        views = build_views(rows, cfg.registration.staleness_seconds)
+        return JSONResponse(
+            {
+                "generated_at": to_iso(utcnow()),
+                "staleness_seconds": cfg.registration.staleness_seconds,
+                "counts": summarise(views),
+                "services": [v.to_dict() for v in views],
+            }
+        )
+
+    @app.get("/config")
+    async def config_page(request: Request) -> Response:
+        ctx = base_context("config") | {"view": redacted_view(cfg, state.bind_ip)}
+        return templates.TemplateResponse(request, "config.html", ctx)
 
     @app.get("/health")
     async def health() -> Response:

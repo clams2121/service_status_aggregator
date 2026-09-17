@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="{{ refresh_seconds }}">{% endblock %}
+{% block content %}
+<section class="summary">
+  <div class="stat"><span class="n">{{ counts.total }}</span><span class="l">services</span></div>
+  <div class="stat up"><span class="n">{{ counts.up }}</span><span class="l">up</span></div>
+  <div class="stat down"><span class="n">{{ counts.down }}</span><span class="l">down</span></div>
+  <div class="stat unknown"><span class="n">{{ counts.unknown }}</span><span class="l">unchecked</span></div>
+  <div class="stat stale"><span class="n">{{ counts.stale }}</span><span class="l">stale</span></div>
+</section>
+
+{% if not services %}
+<p class="empty">No services registered yet. See the README for the registration payload.</p>
+{% else %}
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr>
+      <th>Service</th>
+      <th>Address</th>
+      <th>Health</th>
+      <th class="num">Response</th>
+      <th>Last checked</th>
+      <th>Registration</th>
+      <th>Failure reason</th>
+      <th>Config</th>
+      <th>Log path</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in services %}
+    <tr class="group-{{ s.group }}">
+      <td class="name">
+        {{ s.row.name }}
+        {% if s.row.source == 'self' %}<span class="tag">self</span>{% endif %}
+      </td>
+      <td class="mono">{{ s.address }}</td>
+      <td><span class="badge {{ s.health }}">{{ s.health }}</span></td>
+      <td class="num mono">{% if s.row.last_response_ms is not none %}{{ s.row.last_response_ms }} ms{% else %}&ndash;{% endif %}</td>
+      <td title="{{ s.checked_at_iso }}">{{ s.checked_ago }}</td>
+      <td title="last registered {{ s.registered_at_iso }} ({{ s.row.registration_count }}x)">
+        <span class="badge {{ s.registration }}">{{ s.registration }}</span>
+        <span class="muted">{{ s.registered_ago }}</span>
+      </td>
+      <td class="reason mono">{{ s.row.last_failure_reason or "" }}</td>
+      <td>{% if s.row.config_page_url %}<a href="{{ s.row.config_page_url }}" rel="noopener noreferrer" target="_blank">open</a>{% else %}&ndash;{% endif %}</td>
+      <td class="mono path">{{ s.row.log_path or "&ndash;"|safe }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

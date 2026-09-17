@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Config &middot; Service Status{% endblock %}
+{% block content %}
+<p class="muted">Effective configuration, read-only. Loaded from <code>{{ view.config_path }}</code>.
+Secrets are never shown. Edit the file and restart the service to change anything.</p>
+{% for section, values in view.items() if section != 'config_path' %}
+<section class="cfg">
+  <h2>[{{ section }}]</h2>
+  <dl>
+  {% for key, value in values.items() %}
+    <dt>{{ key }}</dt>
+    <dd class="mono">{% if value is sequence and value is not string %}{{ value|join(", ") }}{% else %}{{ value }}{% endif %}</dd>
+  {% endfor %}
+  </dl>
+</section>
+{% endfor %}
+{% endblock %}
