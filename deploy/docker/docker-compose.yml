@@ -1,0 +1,23 @@
+services:
+  aggregator:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        UID: "${SSA_UID:-990}"
+        GID: "${SSA_GID:-990}"
+    image: service-status-aggregator:local
+    container_name: service-status-aggregator
+    # Host networking so the service can bind the machine's Tailscale IP and poll tailnet peers.
+    network_mode: host
+    user: "${SSA_UID:-990}:${SSA_GID:-990}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    volumes:
+      # config.toml, data/, logs/ live here on the host
+      - "${SSA_STORAGE_DIR:?set SSA_STORAGE_DIR in deploy/docker/.env}:/data"
+      # registration_token file; read via $CREDENTIALS_DIRECTORY, never placed in the environment
+      - "${SSA_STORAGE_DIR}/secrets:/run/credentials:ro"
+    restart: unless-stopped

@@ -40,6 +40,11 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     sub.add_parser("run", help="run the aggregator", parents=[common])
+    sub.add_parser(
+        "healthcheck",
+        help="GET /health on the configured bind address; exit 0 only if it reports ok",
+        parents=[common],
+    )
 
     rm = sub.add_parser(
         "remove", help="remove a decommissioned service from the database", parents=[common]
@@ -83,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
         from service_status_aggregator.runtime import cmd_run
 
         return cmd_run(args.config)
+    if args.command == "healthcheck":
+        from service_status_aggregator.runtime import cmd_healthcheck
+
+        return cmd_healthcheck(args.config)
     if args.command == "remove":
         from service_status_aggregator.runtime import cmd_remove
 

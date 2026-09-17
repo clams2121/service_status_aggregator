@@ -10,6 +10,7 @@ import sys
 from collections.abc import Iterator
 from datetime import timedelta
 
+import httpx
 import uvicorn
 
 from service_status_aggregator import __version__, sdnotify
@@ -264,3 +265,23 @@ def cmd_remove(config_arg: str | None, name: str, host: str) -> int:
         return EXIT_OK
     print(f"no service named {name} @ {host}", file=sys.stderr)
     return 1
+
+
+def cmd_healthcheck(config_arg: str | None) -> int:
+    """Probe /health like an external checker. Used by Docker HEALTHCHECK and installers."""
+    cfg = _load(config_arg)
+    if cfg is None:
+        return EXIT_CONFIG
+    try:
+        bind = resolve_bind(cfg.server.bind, attempts=1)
+    except BindError as exc:
+        print(f"healthcheck: {exc}", file=sys.stderr)
+        return 1
+    url = f"http://{bind.url_host}:{cfg.server.port}/health"
+    try:
+        response = httpx.get(url, timeout=5, trust_env=False)
+    except httpx.HTTPError as exc:
+        print(f"healthcheck: {url} unreachable: {exc}", file=sys.stderr)
+        return 1
+    print(response.text)
+    return EXIT_OK if response.status_code == 200 else 1

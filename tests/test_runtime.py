@@ -162,3 +162,12 @@ def test_remove_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys)
     assert runtime.cmd_remove(str(cfg), "OLD", "127.0.0.1") == 0
     assert "removed old" in capsys.readouterr().out
     assert runtime.cmd_remove(str(cfg), "old", "127.0.0.1") == 1
+
+
+def test_healthcheck_command_unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    cfg = write_cfg(tmp_path, free_port())
+    monkeypatch.setenv("SSA_REGISTRATION_TOKEN", TOKEN)
+    assert runtime.cmd_healthcheck(str(cfg)) == 1
+    assert "unreachable" in capsys.readouterr().err

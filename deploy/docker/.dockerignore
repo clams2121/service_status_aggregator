@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.github
+deploy
+docs
+tests
+var
+*.db
+*.db-*
+*.log
+config.toml
+__pycache__
