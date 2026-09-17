@@ -615,7 +615,7 @@ Answered by the owner on 2026-09-17 (applied throughout this document):
 | Q6 | Transitions table, 90-day retention. |
 | Q7 | CLI-only removal. |
 | Q8 | Owner usually uses Bottle but accepted the FastAPI stack. |
-| Q9 | Not all monitored services are on the tailnet today. Handled by `[[static_services]]` (Q11) and the allowlist. Tailscale-identity auth noted as a later phase. |
+| Q9 | Owner will move every monitored service onto the tailnet (see Q11). Tailscale-identity auth noted as a later phase. |
 | Q10 | CI wanted as long as it costs nothing: ruff + pytest only. |
 
 | Q11 | No static-registration path; every service will be on the tailnet. |
