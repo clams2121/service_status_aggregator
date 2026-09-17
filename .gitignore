@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Service Status Aggregator runtime files (never commit these)
+config.toml
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# venv deployment runtime files
+/var/
+/deploy/docker/.env

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  {% block head %}{% endblock %}
+  <title>{% block title %}Service Status{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <strong>Service Status</strong>
+      <span class="muted">aggregator v{{ version }}</span>
+    </div>
+    <nav>
+      <a href="/" {% if page == 'index' %}class="active"{% endif %}>Status</a>
+      <a href="/config" {% if page == 'config' %}class="active"{% endif %}>Config</a>
+      <a href="/api/services">JSON</a>
+      <a href="/health">Health</a>
+    </nav>
+  </header>
+  {% for warning in warnings %}
+  <div class="notice warn">{{ warning }}</div>
+  {% endfor %}
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="muted">
+    Bound to {{ bind_ip or "(unresolved)" }}:{{ port }} ({{ bind_kind }}) &middot;
+    checking every {{ poll_interval|int }} s &middot; stale after {{ staleness|int }} s &middot;
+    times in {{ timezone }} &middot; rendered {{ now_local }}
+  </footer>
+</body>
+</html>

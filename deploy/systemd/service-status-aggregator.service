@@ -1,0 +1,48 @@
+[Unit]
+Description=Service Status Aggregator
+Documentation=https://github.com/clams2121/service_status_aggregator
+After=network-online.target tailscaled.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=svcstatus
+Group=svcstatus
+WorkingDirectory=/opt/service_status_aggregator
+ExecStart=/opt/service_status_aggregator/.venv/bin/service-status-aggregator run --config /etc/service_status_aggregator/config.toml
+Restart=on-failure
+RestartSec=10
+WatchdogSec=90
+TimeoutStopSec=20
+LoadCredentialEncrypted=registration_token:/etc/credstore.encrypted/ssa-registration_token
+
+# Hardening: the service only needs to read its code and config, and write its db and log.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/service_status_aggregator /var/log/service_status_aggregator
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

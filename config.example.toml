@@ -1,0 +1,53 @@
+# Service Status Aggregator configuration.
+# Copy to /etc/service_status_aggregator/config.toml (or pass --config PATH).
+# The registration token is NOT set here; see README "Secrets".
+
+[server]
+# "auto":      bind the machine's Tailscale IPv4 if present, else 127.0.0.1 (with an SSH-tunnel note).
+# "tailscale": same, but exit instead of falling back to loopback.
+# "<ip>":      an explicit address assigned to a local interface. 0.0.0.0 is never allowed.
+bind = "auto"
+port = 8720
+
+[storage]
+db_path = "/var/lib/service_status_aggregator/aggregator.db"
+
+[polling]
+# How often every service's health_url is checked. Allowed 10-600; 60-300 (1-5 minutes) recommended.
+# The status page auto-refreshes at this interval too.
+interval_seconds = 60
+timeout_seconds = 5
+max_concurrent = 10
+
+[registration]
+# A service that has not re-registered within this window is shown as stale (never deleted).
+staleness_seconds = 900
+# When true, POST /register requires "Authorization: Bearer <token>" and the
+# service refuses to start without a token. Only set false on a fully trusted network.
+require_token = true
+# The aggregator will only poll health URLs whose host resolves inside these networks.
+# Defaults cover Tailscale (IPv4 CGNAT + IPv6) and loopback. Widen deliberately.
+allowed_target_cidrs = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "127.0.0.0/8", "::1/128"]
+# Show the aggregator itself as a row on the dashboard.
+register_self = true
+self_register_interval_seconds = 300
+
+[history]
+# Status transitions older than this are pruned.
+retention_days = 90
+
+[display]
+# Days shown in each service's uptime strip (one node per day). Cannot exceed retention_days.
+history_days = 90
+# IANA zone used for day boundaries and timestamps on the page, e.g. "America/New_York".
+timezone = "UTC"
+# A day with at least this much total downtime is red; any downtime below it is yellow.
+major_outage_minutes = 30
+# A service that answers 200 slower than this is shown as "Degraded" (yellow) rather than "Operational".
+degraded_response_ms = 1000
+
+[logging]
+path = "/var/log/service_status_aggregator/aggregator.log"
+level = "INFO"
+max_bytes = 5242880
+backup_count = 5
