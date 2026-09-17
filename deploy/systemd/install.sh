@@ -60,7 +60,7 @@ else
   log "keeping existing $ETC_DIR/config.toml"
 fi
 
-PORT="$(awk -F'=' '/^\s*port\s*=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$ETC_DIR/config.toml")"
+PORT="$(awk -F'=' '/^[[:space:]]*port[[:space:]]*=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$ETC_DIR/config.toml")"
 PORT="${PORT:-$SSA_PORT_DEFAULT}"
 if ! systemctl is-active --quiet "$UNIT"; then
   require_port_free "$PORT"

@@ -54,7 +54,7 @@ SSA_UID=$SSA_UID
 SSA_GID=$SSA_GID
 ENV
 
-PORT="$(awk -F'=' '/^\s*port\s*=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$STORAGE/config.toml")"
+PORT="$(awk -F'=' '/^[[:space:]]*port[[:space:]]*=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$STORAGE/config.toml")"
 PORT="${PORT:-$SSA_PORT_DEFAULT}"
 if ! docker ps --format '{{.Names}}' | grep -qx service-status-aggregator; then
   require_port_free "$PORT"
