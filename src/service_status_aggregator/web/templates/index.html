@@ -1,54 +1,59 @@
 {% extends "base.html" %}
 {% block head %}<meta http-equiv="refresh" content="{{ refresh_seconds }}">{% endblock %}
 {% block content %}
-<section class="summary">
-  <div class="stat"><span class="n">{{ counts.total }}</span><span class="l">services</span></div>
-  <div class="stat up"><span class="n">{{ counts.up }}</span><span class="l">up</span></div>
-  <div class="stat down"><span class="n">{{ counts.down }}</span><span class="l">down</span></div>
-  <div class="stat unknown"><span class="n">{{ counts.unknown }}</span><span class="l">unchecked</span></div>
-  <div class="stat stale"><span class="n">{{ counts.stale }}</span><span class="l">stale</span></div>
-</section>
+<div class="banner {{ banner.level }}">
+  <span class="banner-text">{{ banner.text }}</span>
+  <span class="banner-counts">
+    {{ counts.up }} operational &middot; {{ counts.degraded }} degraded &middot; {{ counts.down }} down
+    {%- if counts.unknown %} &middot; {{ counts.unknown }} unchecked{% endif %}
+  </span>
+</div>
 
 {% if not services %}
 <p class="empty">No services registered yet. See the README for the registration payload.</p>
-{% else %}
-<div class="tablewrap">
-<table>
-  <thead>
-    <tr>
-      <th>Service</th>
-      <th>Address</th>
-      <th>Health</th>
-      <th class="num">Response</th>
-      <th>Last checked</th>
-      <th>Registration</th>
-      <th>Failure reason</th>
-      <th>Config</th>
-      <th>Log path</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for s in services %}
-    <tr class="group-{{ s.group }}">
-      <td class="name">
-        {{ s.row.name }}
-        {% if s.row.source == 'self' %}<span class="tag">self</span>{% endif %}
-      </td>
-      <td class="mono addr">{{ s.address }}</td>
-      <td><span class="badge {{ s.health }}">{{ s.health }}</span></td>
-      <td class="num mono">{% if s.row.last_response_ms is not none %}{{ s.row.last_response_ms }} ms{% else %}&ndash;{% endif %}</td>
-      <td class="when" title="{{ s.checked_at_iso }}">{{ s.checked_ago }}</td>
-      <td title="last registered {{ s.registered_at_iso }} ({{ s.row.registration_count }}x)">
-        <span class="badge {{ s.registration }}">{{ s.registration }}</span>
-        <span class="muted">{{ s.registered_ago }}</span>
-      </td>
-      <td class="reason mono">{{ s.row.last_failure_reason or "" }}</td>
-      <td>{% if s.row.config_page_url %}<a href="{{ s.row.config_page_url }}" rel="noopener noreferrer" target="_blank">open</a>{% else %}&ndash;{% endif %}</td>
-      <td class="mono path">{{ s.row.log_path or "&ndash;"|safe }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+{% endif %}
+
+{% for s in services %}
+<section class="svc live-{{ s.live }}">
+  <div class="svc-head">
+    <div class="svc-title">
+      <span class="svc-name">{{ s.row.name }}</span>
+      {% if s.row.source == 'self' %}<span class="tag">self</span>{% endif %}
+      <span class="tip" data-tip="{{ s.row.name }} at {{ s.address }}&#10;health: {{ s.row.health_url }}&#10;registered {{ s.row.registration_count }}x, last {{ s.registered_at_local }}">?</span>
+    </div>
+    <div class="svc-status">
+      <span class="status-word {{ s.live }}" title="{{ s.live_detail }}">{{ s.live_label }}</span>
+      {% if s.live != 'up' %}<span class="status-detail mono">{{ s.live_detail }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="strip" aria-label="{{ history_days }}-day history">
+    {% for c in s.history.cells %}<span class="cell {{ c.status }}{% if c.is_today %} today{% endif %}{% if loop.index * 3 > history_days * 2 %} flip{% endif %}" data-tip="{{ c.tooltip() }}"></span>{% endfor %}
+  </div>
+  <div class="strip-foot muted">
+    <span>{{ history_days }} days ago</span>
+    <span>{{ s.history.uptime_label }}</span>
+    <span>Today</span>
+  </div>
+
+  <div class="svc-meta muted">
+    <span class="mono">{{ s.address }}</span>
+    <span>{% if s.row.last_response_ms is not none %}{{ s.row.last_response_ms }} ms{% else %}&ndash;{% endif %}</span>
+    <span title="{{ s.checked_at_local }}">checked {{ s.checked_ago }}</span>
+    <span title="{{ s.registered_at_local }}" class="{% if s.stale %}stale-text{% endif %}">registered {{ s.registered_ago }}{% if s.stale %} (stale){% endif %}</span>
+    {% if s.row.config_page_url %}<a href="{{ s.row.config_page_url }}" rel="noopener noreferrer" target="_blank">config page</a>{% endif %}
+    {% if s.row.log_path %}<span class="mono path" title="log path">{{ s.row.log_path }}</span>{% endif %}
+  </div>
+</section>
+{% endfor %}
+
+{% if services %}
+<p class="legend muted">
+  <span class="cell ok"></span> no incidents &nbsp;
+  <span class="cell minor"></span> downtime under {{ major_outage_minutes|int }} min &nbsp;
+  <span class="cell major"></span> {{ major_outage_minutes|int }} min or more &nbsp;
+  <span class="cell nodata"></span> no data &nbsp;&middot;&nbsp;
+  a response over {{ degraded_response_ms|int }} ms or a stale registration shows as degraded
+</p>
 {% endif %}
 {% endblock %}

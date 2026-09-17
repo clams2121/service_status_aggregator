@@ -9,7 +9,7 @@ import pytest
 from service_status_aggregator.config import load_config
 from service_status_aggregator.storage import STATUS_DOWN, STATUS_UP, Storage, utcnow
 from service_status_aggregator.web.app import RuntimeState, create_app
-from service_status_aggregator.web.views import build_views, humanize_age
+from service_status_aggregator.web.views import banner, build_views, humanize_age, summarise
 from tests.conftest import write_config
 
 TOKEN = "test-token-0123456789abcdef"
@@ -28,19 +28,46 @@ def record(name: str, **extra: object) -> dict:
 
 @pytest.fixture
 def state(tmp_path: Path) -> RuntimeState:
-    cfg = load_config(write_config(tmp_path), environ={"SSA_REGISTRATION_TOKEN": TOKEN})
+    cfg = load_config(
+        write_config(tmp_path, extra='[display]\ntimezone = "Europe/London"\n'),
+        environ={"SSA_REGISTRATION_TOKEN": TOKEN},
+    )
     storage = Storage(cfg.storage.db_path)
     storage.migrate()
     now = utcnow()
-    up, _ = storage.upsert_registration(record("alpha"), now=now)
+    up, _ = storage.upsert_registration(record("alpha"), now=now - timedelta(days=3))
+    storage.upsert_registration(record("alpha"), now=now)  # fresh again, first seen 3 days ago
     down, _ = storage.upsert_registration(record("bravo"), now=now)
+    slow, _ = storage.upsert_registration(record("echo"), now=now)
     storage.upsert_registration(record("charlie"), now=now - timedelta(hours=2))  # stale
     storage.upsert_registration(record("delta", log_path="", config_page_url=""), now=now)
+    # alpha: up for 3 days with a 20-minute blip yesterday
     storage.record_check(
-        up.id, status=STATUS_UP, checked_at=now, response_ms=4.2, failure_reason=None
+        up.id,
+        status=STATUS_UP,
+        checked_at=now - timedelta(days=3),
+        response_ms=4,
+        failure_reason=None,
+    )
+    storage.record_check(
+        up.id,
+        status=STATUS_DOWN,
+        checked_at=now - timedelta(days=1, hours=2),
+        response_ms=None,
+        failure_reason="http_502",
+    )
+    storage.record_check(
+        up.id,
+        status=STATUS_UP,
+        checked_at=now - timedelta(days=1, hours=2) + timedelta(minutes=20),
+        response_ms=4.2,
+        failure_reason=None,
     )
     storage.record_check(
         down.id, status=STATUS_DOWN, checked_at=now, response_ms=None, failure_reason="http_503"
+    )
+    storage.record_check(
+        slow.id, status=STATUS_UP, checked_at=now, response_ms=2500.0, failure_reason=None
     )
     st = RuntimeState(cfg=cfg, storage=storage)
     st.bind_ip, st.bind_kind = "100.100.100.1", "tailscale"
@@ -55,18 +82,29 @@ async def client(state: RuntimeState):
         yield c
 
 
-async def test_index_lists_each_service_once_in_order(client: httpx.AsyncClient) -> None:
+async def test_index_rows_order_and_history(client: httpx.AsyncClient) -> None:
     r = await client.get("/")
     assert r.status_code == 200
     html = r.text
-    for name in ("alpha", "bravo", "charlie", "delta"):
-        assert html.count(f"\n        {name}\n") == 1
-    assert html.index("bravo") < html.index("charlie") < html.index("delta") < html.index("alpha")
-    assert 'class="badge stale"' in html
-    assert "http_503" in html
+    for name in ("alpha", "bravo", "charlie", "delta", "echo"):
+        assert html.count(f'<span class="svc-name">{name}</span>') == 1
+    # down, then degraded (slow echo), then unchecked (charlie, delta), then up alpha
+    order = [
+        html.index(f'<span class="svc-name">{n}</span>')
+        for n in ("bravo", "echo", "charlie", "delta", "alpha")
+    ]
+    assert order == sorted(order)
+    assert "1 service down" in html
+    assert 'class="status-word down"' in html and "http_503" in html
+    assert "registration stale" in html and "slow response: 2500 ms" in html
+    assert html.count('class="cell ') >= 5 * 90
+    assert 'class="cell minor"' in html  # alpha's blip yesterday
+    assert "Down 20 min (1 incident)" in html and "http_502" in html
+    assert "% uptime" in html
     assert 'rel="noopener noreferrer"' in html
     assert r.headers["Content-Security-Policy"].startswith("default-src 'self'")
-    assert 'http-equiv="refresh"' in html
+    assert 'http-equiv="refresh" content="30"' in html
+    assert "Europe/London" in html
     assert "127.0.0.1" not in html  # no loopback warning when bound to tailscale
 
 
@@ -81,11 +119,24 @@ async def test_index_escapes_untrusted_fields(
 
 async def test_api_services(client: httpx.AsyncClient) -> None:
     body = (await client.get("/api/services")).json()
-    assert body["counts"] == {"total": 4, "up": 1, "down": 1, "unknown": 2, "stale": 1}
+    assert body["counts"] == {
+        "total": 5,
+        "up": 1,
+        "degraded": 1,
+        "down": 1,
+        "unknown": 2,
+        "stale": 1,
+    }
+    assert body["overall"] == "1 service down"
     names = [s["name"] for s in body["services"]]
-    assert names == ["bravo", "charlie", "delta", "alpha"]
+    assert names[0] == "bravo" and names[-1] == "alpha"
+    alpha = next(s for s in body["services"] if s["name"] == "alpha")
+    assert len(alpha["history"]) == 90
+    assert alpha["history"][-2]["status"] == "minor" and alpha["history"][-2]["incidents"] == 1
+    assert alpha["history"][0]["status"] == "nodata"
+    assert 99.0 < alpha["uptime_pct"] < 100.0
     charlie = next(s for s in body["services"] if s["name"] == "charlie")
-    assert charlie["stale"] is True and charlie["group"] == "stale"
+    assert charlie["stale"] is True and charlie["live"] == "unknown"
 
 
 async def test_config_page_redacts_token(client: httpx.AsyncClient) -> None:
@@ -94,6 +145,7 @@ async def test_config_page_redacts_token(client: httpx.AsyncClient) -> None:
     assert TOKEN not in r.text
     assert "***" in r.text
     assert "100.64.0.0/10" in r.text
+    assert "Europe/London" in r.text
 
 
 async def test_warning_banners(state: RuntimeState, client: httpx.AsyncClient) -> None:
@@ -115,6 +167,28 @@ def test_humanize_age() -> None:
     assert humanize_age(90000) == "1 d 1 h ago"
 
 
-def test_build_views_sort_and_stale(state: RuntimeState) -> None:
-    views = build_views(state.storage.list_services(), staleness_seconds=900)
-    assert [v.group for v in views] == ["down", "stale", "unknown", "up"]
+def test_views_live_states_and_banner(state: RuntimeState) -> None:
+    views = build_views(state.storage.list_services(), state.cfg)
+    live = {v.row.name: v.live for v in views}
+    assert live == {
+        "bravo": "down",
+        "charlie": "unknown",
+        "echo": "degraded",
+        "delta": "unknown",
+        "alpha": "up",
+    }
+    assert [v.live for v in views] == ["down", "degraded", "unknown", "unknown", "up"]
+    counts = summarise(views)
+    assert banner(counts).level == "bad"
+    assert (
+        banner({"total": 0, "up": 0, "degraded": 0, "down": 0, "unknown": 0, "stale": 0}).level
+        == "none"
+    )
+    assert (
+        banner({"total": 2, "up": 2, "degraded": 0, "down": 0, "unknown": 0, "stale": 0}).text
+        == "All systems operational"
+    )
+    assert (
+        banner({"total": 2, "up": 1, "degraded": 1, "down": 0, "unknown": 0, "stale": 0}).level
+        == "warn"
+    )

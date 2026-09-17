@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -28,7 +29,8 @@ from service_status_aggregator.models import (
     system_resolver,
 )
 from service_status_aggregator.storage import SOURCE_REGISTER, Storage, to_iso, utcnow
-from service_status_aggregator.web.views import build_views, summarise
+from service_status_aggregator.web.history import build_histories
+from service_status_aggregator.web.views import banner, build_views, rendered_at, summarise
 
 _HERE = Path(__file__).resolve().parent
 
@@ -133,8 +135,23 @@ def create_app(state: RuntimeState) -> FastAPI:
             "port": cfg.server.port,
             "poll_interval": cfg.polling.interval_seconds,
             "staleness": cfg.registration.staleness_seconds,
-            "now_iso": to_iso(utcnow()),
+            "now_local": rendered_at(utcnow(), ZoneInfo(cfg.display.timezone)),
+            "timezone": cfg.display.timezone,
         }
+
+    def load_views() -> list[Any]:
+        """Rows plus reconstructed history; runs in a worker thread."""
+        now = utcnow()
+        rows = state.storage.list_services()
+        histories = build_histories(
+            state.storage,
+            rows,
+            days=cfg.display.history_days,
+            tz=ZoneInfo(cfg.display.timezone),
+            major_outage_s=cfg.display.major_outage_minutes * 60,
+            now=now,
+        )
+        return build_views(rows, cfg, now, histories)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -201,24 +218,31 @@ def create_app(state: RuntimeState) -> FastAPI:
 
     @app.get("/")
     async def index(request: Request) -> Response:
-        rows = await asyncio.to_thread(state.storage.list_services)
-        views = build_views(rows, cfg.registration.staleness_seconds)
+        views = await asyncio.to_thread(load_views)
+        counts = summarise(views)
         ctx = base_context("index") | {
             "services": views,
-            "counts": summarise(views),
+            "counts": counts,
+            "banner": banner(counts),
+            "history_days": cfg.display.history_days,
+            "major_outage_minutes": cfg.display.major_outage_minutes,
+            "degraded_response_ms": cfg.display.degraded_response_ms,
             "refresh_seconds": max(10, int(cfg.polling.interval_seconds)),
         }
         return templates.TemplateResponse(request, "index.html", ctx)
 
     @app.get("/api/services")
     async def api_services() -> Response:
-        rows = await asyncio.to_thread(state.storage.list_services)
-        views = build_views(rows, cfg.registration.staleness_seconds)
+        views = await asyncio.to_thread(load_views)
+        counts = summarise(views)
         return JSONResponse(
             {
                 "generated_at": to_iso(utcnow()),
+                "timezone": cfg.display.timezone,
                 "staleness_seconds": cfg.registration.staleness_seconds,
-                "counts": summarise(views),
+                "history_days": cfg.display.history_days,
+                "counts": counts,
+                "overall": banner(counts).text,
                 "services": [v.to_dict() for v in views],
             }
         )

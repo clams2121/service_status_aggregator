@@ -36,7 +36,7 @@ port = {port}
 [storage]
 db_path = "{tmp_path}/data/aggregator.db"
 [polling]
-interval_seconds = 1
+interval_seconds = 10
 timeout_seconds = 0.5
 [registration]
 self_register_interval_seconds = 1
@@ -171,3 +171,42 @@ def test_healthcheck_command_unreachable(
     monkeypatch.setenv("SSA_REGISTRATION_TOKEN", TOKEN)
     assert runtime.cmd_healthcheck(str(cfg)) == 1
     assert "unreachable" in capsys.readouterr().err
+
+
+def test_detect_monitoring_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import timedelta
+
+    from service_status_aggregator.storage import META_LAST_CYCLE, to_iso, utcnow
+    from service_status_aggregator.web.app import RuntimeState
+
+    cfg = write_cfg(tmp_path, 1)
+    monkeypatch.setenv("SSA_REGISTRATION_TOKEN", TOKEN)
+    c = load_config(cfg)
+    st = Storage(c.storage.db_path)
+    st.migrate()
+    row, _ = st.upsert_registration(
+        {
+            "name": "svc",
+            "host": "127.0.0.1",
+            "port": 1,
+            "health_url": "http://127.0.0.1/h",
+            "log_path": "",
+            "config_page_url": "",
+        }
+    )
+    st.record_check(
+        row.id,
+        status="up",
+        checked_at=utcnow() - timedelta(hours=3),
+        response_ms=1,
+        failure_reason=None,
+    )
+    state = RuntimeState(cfg=c, storage=st)
+    assert runtime.detect_monitoring_gap(state) == 0  # no meta yet
+    st.set_meta(META_LAST_CYCLE, to_iso(utcnow() - timedelta(seconds=15)))
+    assert runtime.detect_monitoring_gap(state) == 0  # within 3 intervals
+    st.set_meta(META_LAST_CYCLE, to_iso(utcnow() - timedelta(hours=2)))
+    assert runtime.detect_monitoring_gap(state) == 1
+    events = st.list_events(row.id)
+    assert events[0].to_status == "unknown" and "aggregator not running" in (events[0].reason or "")
+    st.close()

@@ -11,9 +11,8 @@
 <body>
   <header class="top">
     <div class="brand">
-      <span class="dot"></span>
-      <strong>Service Status Aggregator</strong>
-      <span class="muted">v{{ version }}</span>
+      <strong>Service Status</strong>
+      <span class="muted">aggregator v{{ version }}</span>
     </div>
     <nav>
       <a href="/" {% if page == 'index' %}class="active"{% endif %}>Status</a>
@@ -23,15 +22,15 @@
     </nav>
   </header>
   {% for warning in warnings %}
-  <div class="banner warn">{{ warning }}</div>
+  <div class="notice warn">{{ warning }}</div>
   {% endfor %}
   <main>
     {% block content %}{% endblock %}
   </main>
   <footer class="muted">
     Bound to {{ bind_ip or "(unresolved)" }}:{{ port }} ({{ bind_kind }}) &middot;
-    polling every {{ poll_interval|int }} s &middot; stale after {{ staleness|int }} s &middot;
-    rendered {{ now_iso }}
+    checking every {{ poll_interval|int }} s &middot; stale after {{ staleness|int }} s &middot;
+    times in {{ timezone }} &middot; rendered {{ now_local }}
   </footer>
 </body>
 </html>

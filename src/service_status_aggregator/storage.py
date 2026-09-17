@@ -53,7 +53,14 @@ CREATE TABLE IF NOT EXISTS status_events (
   reason      TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_status_events_service_at ON status_events(service_id, at);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
+
+META_LAST_CYCLE = "last_cycle_at"
 
 
 def utcnow() -> datetime:
@@ -325,6 +332,67 @@ class Storage:
                 )
         return previous if changed else None
 
+    def mark_unknown(self, service_id: int, *, at: datetime, reason: str) -> bool:
+        """Record that monitoring stopped at *at* (a transition to 'unknown'). True if changed."""
+        ts = to_iso(at)
+        with self._lock, self._tx():
+            row = self._conn.execute(
+                "SELECT last_status FROM services WHERE id = ?", (service_id,)
+            ).fetchone()
+            if row is None or row["last_status"] == STATUS_UNKNOWN:
+                return False
+            previous = str(row["last_status"])
+            self._conn.execute(
+                "UPDATE services SET last_status = ?, last_failure_reason = ?,"
+                " last_status_change_at = ? WHERE id = ?",
+                (STATUS_UNKNOWN, reason, ts, service_id),
+            )
+            self._conn.execute(
+                "INSERT INTO status_events (service_id, at, from_status, to_status, reason)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (service_id, ts, previous, STATUS_UNKNOWN, reason),
+            )
+        return True
+
+    def events_since(self, since: datetime) -> dict[int, list[StatusEvent]]:
+        """Events at or after *since*, ascending, grouped by service id."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM status_events WHERE at >= ? ORDER BY service_id, at, id",
+                (to_iso(since),),
+            ).fetchall()
+        grouped: dict[int, list[StatusEvent]] = {}
+        for r in rows:
+            grouped.setdefault(int(r["service_id"]), []).append(_event(r))
+        return grouped
+
+    def status_before(self, before: datetime) -> dict[int, str]:
+        """For every service, the status in force just before *before* (from its last event)."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT service_id, to_status FROM status_events
+                WHERE id IN (
+                  SELECT MAX(id) FROM status_events WHERE at < ? GROUP BY service_id
+                )
+                """,
+                (to_iso(before),),
+            ).fetchall()
+        return {int(r["service_id"]): str(r["to_status"]) for r in rows}
+
+    def get_meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock, self._tx():
+            self._conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
     def list_events(self, service_id: int | None = None, limit: int = 100) -> list[StatusEvent]:
         with self._lock:
             if service_id is None:
@@ -337,17 +405,7 @@ class Storage:
                     " ORDER BY at DESC, id DESC LIMIT ?",
                     (service_id, limit),
                 ).fetchall()
-        return [
-            StatusEvent(
-                r["id"],
-                r["service_id"],
-                from_iso(r["at"]),
-                r["from_status"],
-                r["to_status"],
-                r["reason"],  # type: ignore[arg-type]
-            )
-            for r in rows
-        ]
+        return [_event(r) for r in rows]
 
     def prune_events(self, older_than: datetime) -> int:
         with self._lock, self._tx():
@@ -355,3 +413,14 @@ class Storage:
                 "DELETE FROM status_events WHERE at < ?", (to_iso(older_than),)
             )
             return cur.rowcount
+
+
+def _event(r: sqlite3.Row) -> StatusEvent:
+    return StatusEvent(
+        r["id"],
+        r["service_id"],
+        from_iso(r["at"]),  # type: ignore[arg-type]
+        r["from_status"],
+        r["to_status"],
+        r["reason"],
+    )

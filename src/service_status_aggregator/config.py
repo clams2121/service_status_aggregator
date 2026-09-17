@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import tomllib
+import zoneinfo
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,9 +53,13 @@ class StorageConfig:
     db_path: Path = Path("/var/lib/service_status_aggregator/aggregator.db")
 
 
+MIN_INTERVAL_SECONDS = 10.0
+MAX_INTERVAL_SECONDS = 600.0
+
+
 @dataclass(frozen=True)
 class PollingConfig:
-    interval_seconds: float = 30.0
+    interval_seconds: float = 60.0
     timeout_seconds: float = 5.0
     max_concurrent: int = 10
 
@@ -76,6 +81,14 @@ class HistoryConfig:
 
 
 @dataclass(frozen=True)
+class DisplayConfig:
+    history_days: int = 90
+    timezone: str = "UTC"
+    major_outage_minutes: float = 30.0
+    degraded_response_ms: float = 1000.0
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     path: Path = Path("/var/log/service_status_aggregator/aggregator.log")
     level: str = "INFO"
@@ -91,6 +104,7 @@ class Config:
     polling: PollingConfig
     registration: RegistrationConfig
     history: HistoryConfig
+    display: DisplayConfig
     logging: LoggingConfig
     registration_token: str | None = None
 
@@ -204,7 +218,15 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
         raise ConfigError([f"config file could not be read: {exc}"], path) from exc
 
     for key in data:
-        if key not in {"server", "storage", "polling", "registration", "history", "logging"}:
+        if key not in {
+            "server",
+            "storage",
+            "polling",
+            "registration",
+            "history",
+            "display",
+            "logging",
+        }:
             problems.append(f"unknown top-level table '{key}'")
 
     r = _Reader(data, problems)
@@ -237,11 +259,14 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
 
     # [polling]
     t = r.section("polling", {"interval_seconds", "timeout_seconds", "max_concurrent"})
-    interval = float(r.get(t, "polling", "interval_seconds", (int, float), 30))
+    interval = float(r.get(t, "polling", "interval_seconds", (int, float), 60))
     timeout = float(r.get(t, "polling", "timeout_seconds", (int, float), 5))
     max_conc = r.get(t, "polling", "max_concurrent", int, 10)
-    if interval <= 0:
-        problems.append(f"[polling].interval_seconds must be > 0, got {interval}")
+    if not MIN_INTERVAL_SECONDS <= interval <= MAX_INTERVAL_SECONDS:
+        problems.append(
+            f"[polling].interval_seconds must be between {MIN_INTERVAL_SECONDS:g} and "
+            f"{MAX_INTERVAL_SECONDS:g} (1-5 minutes recommended), got {interval:g}"
+        )
     if timeout <= 0:
         problems.append(f"[polling].timeout_seconds must be > 0, got {timeout}")
     if interval > 0 and timeout > 0 and timeout >= interval:
@@ -305,6 +330,30 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
     if retention < 1:
         problems.append(f"[history].retention_days must be >= 1, got {retention}")
 
+    # [display]
+    t = r.section(
+        "display", {"history_days", "timezone", "major_outage_minutes", "degraded_response_ms"}
+    )
+    history_days = r.get(t, "display", "history_days", int, 90)
+    tz_name = str(r.get(t, "display", "timezone", str, "UTC")).strip()
+    major_minutes = float(r.get(t, "display", "major_outage_minutes", (int, float), 30))
+    degraded_ms = float(r.get(t, "display", "degraded_response_ms", (int, float), 1000))
+    if not 1 <= history_days <= 365:
+        problems.append(f"[display].history_days must be 1-365, got {history_days}")
+    elif history_days > retention:
+        problems.append(
+            f"[display].history_days ({history_days}) cannot exceed "
+            f"[history].retention_days ({retention})"
+        )
+    try:
+        zoneinfo.ZoneInfo(tz_name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        problems.append(f"[display].timezone is not a known IANA zone: '{tz_name}'")
+    if major_minutes <= 0:
+        problems.append(f"[display].major_outage_minutes must be > 0, got {major_minutes:g}")
+    if degraded_ms <= 0:
+        problems.append(f"[display].degraded_response_ms must be > 0, got {degraded_ms:g}")
+
     # [logging]
     t = r.section("logging", {"path", "level", "max_bytes", "backup_count"})
     log_path = Path(r.get(t, "logging", "path", str, str(LoggingConfig().path))).expanduser()
@@ -351,6 +400,7 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
             self_register_interval_seconds=self_interval,
         ),
         history=HistoryConfig(retention_days=retention),
+        display=DisplayConfig(history_days, tz_name, major_minutes, degraded_ms),
         logging=LoggingConfig(log_path, level, max_bytes, backup_count),
         registration_token=token,
     )
@@ -380,6 +430,12 @@ def redacted_view(cfg: Config, bind_resolved: str | None = None) -> dict[str, An
             "self_register_interval_seconds": cfg.registration.self_register_interval_seconds,
         },
         "history": {"retention_days": cfg.history.retention_days},
+        "display": {
+            "history_days": cfg.display.history_days,
+            "timezone": cfg.display.timezone,
+            "major_outage_minutes": cfg.display.major_outage_minutes,
+            "degraded_response_ms": cfg.display.degraded_response_ms,
+        },
         "logging": {
             "path": str(cfg.logging.path),
             "level": cfg.logging.level,

@@ -12,7 +12,14 @@ import httpx
 
 from service_status_aggregator import __version__
 from service_status_aggregator.models import check_target
-from service_status_aggregator.storage import STATUS_DOWN, STATUS_UP, ServiceRow, utcnow
+from service_status_aggregator.storage import (
+    META_LAST_CYCLE,
+    STATUS_DOWN,
+    STATUS_UP,
+    ServiceRow,
+    to_iso,
+    utcnow,
+)
 from service_status_aggregator.web.app import RuntimeState
 
 log = logging.getLogger("service_status_aggregator.poller")
@@ -96,7 +103,9 @@ class Poller:
                 failure_reason=r.failure_reason,
             )
             self._log_result(r, previous)
-        self.state.poller_last_cycle_at = utcnow()
+        finished = utcnow()
+        self.state.poller_last_cycle_at = finished
+        await asyncio.to_thread(self.state.storage.set_meta, META_LAST_CYCLE, to_iso(finished))
         return list(results)
 
     @staticmethod

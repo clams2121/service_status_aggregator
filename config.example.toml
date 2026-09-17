@@ -13,7 +13,9 @@ port = 8720
 db_path = "/var/lib/service_status_aggregator/aggregator.db"
 
 [polling]
-interval_seconds = 30
+# How often every service's health_url is checked. Allowed 10-600; 60-300 (1-5 minutes) recommended.
+# The status page auto-refreshes at this interval too.
+interval_seconds = 60
 timeout_seconds = 5
 max_concurrent = 10
 
@@ -33,6 +35,16 @@ self_register_interval_seconds = 300
 [history]
 # Status transitions older than this are pruned.
 retention_days = 90
+
+[display]
+# Days shown in each service's uptime strip (one node per day). Cannot exceed retention_days.
+history_days = 90
+# IANA zone used for day boundaries and timestamps on the page, e.g. "America/New_York".
+timezone = "UTC"
+# A day with at least this much total downtime is red; any downtime below it is yellow.
+major_outage_minutes = 30
+# A service that answers 200 slower than this is shown as "Degraded" (yellow) rather than "Operational".
+degraded_response_ms = 1000
 
 [logging]
 path = "/var/log/service_status_aggregator/aggregator.log"

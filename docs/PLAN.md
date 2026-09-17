@@ -654,3 +654,21 @@ Answered by the owner on 2026-09-17 (applied throughout this document):
   environment and the owner wanted CI kept minimal); the Dockerfile and
   compose file were reviewed but not run here. Run `deploy/docker/install.sh`
   on the host to verify.
+
+## 20. v1.1: status-page style history (added after v1)
+
+Owner asked for the look of a public status page (Atlassian Statuspage, as used
+by redditstatus.com) with green nodes that turn yellow or red and carry hover
+details, and a check interval configurable between 1 and 5 minutes.
+
+- `[polling].interval_seconds` default 60, validated 10–600.
+- New `[display]` table: `history_days` (≤ retention), `timezone` (IANA),
+  `major_outage_minutes` (red vs yellow day), `degraded_response_ms`.
+- Per-day cells are reconstructed from `status_events` (`web/history.py`);
+  no per-check storage was added. Incidents are counted on the day they begin;
+  carried-over downtime at the window start is not a new incident.
+- The poller writes `meta.last_cycle_at` each cycle; on startup a gap longer
+  than three intervals marks every service `unknown` from the gap start, so
+  aggregator downtime is drawn grey, not green.
+- Live states: up / degraded (slow or stale) / down / unknown; overall banner.
+- Tooltips are CSS-only (`data-tip` + `::after`); the page still ships no JS.

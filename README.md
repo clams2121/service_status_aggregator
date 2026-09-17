@@ -28,9 +28,22 @@ you (browser over Tailscale) ──────────── GET / ──�
   deleted, so a late restart shows up as a gap rather than erased history.
 - **Polling** treats only HTTP 200 as `up`. Any other status, a timeout, or a
   connection error is `down`, with the specific reason recorded and logged.
-- **The page** lists every service with health, response time, last-checked
-  time, registration freshness, failure reason, a deep link to its config page,
-  and its log path (shown as text; the aggregator never reads other logs).
+- **The page** is laid out like a public status page: a banner at the top
+  (green "All systems operational", yellow for degraded, red when anything is
+  down), then one card per service with its current state and a strip of
+  nodes, one per day, for the last 90 days. A day is green with no incidents,
+  yellow with downtime under a threshold, red at or above it, and grey where
+  there is no data. Hovering a node shows the date, total downtime, incident
+  count and the failure reasons seen. The card also shows response time,
+  last-checked time, registration freshness, a deep link to the service's
+  config page, and its log path (shown as text; the aggregator never reads
+  other logs).
+- **Live states:** Operational (green), Degraded (yellow: a 200 that took
+  longer than `degraded_response_ms`, or a registration that has gone stale),
+  Down (red), Unchecked (grey, no poll yet). Hover the state for the reason.
+- **Honest gaps:** if the aggregator itself was not running, that period is
+  recorded as unknown and drawn grey rather than stretching the last known
+  colour across time nobody was watching.
 
 ## Quick start
 
@@ -46,8 +59,11 @@ answers on `/health` before finishing.
 
 Then open `http://<tailscale-ip>:8720/`.
 
-Defaults: port `8720`, poll every `30 s`, stale after `900 s`. All of it lives
-in one TOML file; see `config.example.toml` for every option with comments.
+Defaults: port `8720`, check every `60 s` (allowed 10–600 s; 1–5 minutes is
+the intended range), stale after `900 s`, 90 days of history, day boundaries
+in `UTC` (set `[display].timezone` to your zone, e.g. `America/New_York`).
+All of it lives in one TOML file; see `config.example.toml` for every option
+with comments.
 `service-status-aggregator check-config --config <file>` reports every problem
 at once, and the service refuses to start on any of them.
 
@@ -163,8 +179,8 @@ WireGuard; if you want TLS at the browser, `tailscale serve` can front it.
 
 | Path | What |
 |---|---|
-| `GET /` | The status page. Auto-refreshes at the poll interval. |
-| `GET /api/services` | The same rows as JSON, with `stale` and `group` computed. |
+| `GET /` | The status page. Auto-refreshes at the check interval. |
+| `GET /api/services` | The same data as JSON: live state, detail, uptime percentage and the per-day history for each service. |
 | `GET /config` | Effective configuration, read-only, token redacted. Editing is by file + restart in v1. |
 | `GET /health` | Readiness: `200` only when the database is reachable and writable **and** the poller completed a cycle within 2× the interval. Otherwise `503` naming the failing check. |
 | `POST /register` | Described above. The only write endpoint. |
@@ -210,7 +226,13 @@ crashes but not deliberate stops.
 - **Removing a service:** there is no delete endpoint by design. Use
   `service-status-aggregator remove <name> <host>`.
 - **History:** the `services` row holds the latest result; `status_events`
-  keeps up/down transitions only, pruned after `[history].retention_days`.
+  keeps transitions only (up, down, unknown), pruned after
+  `[history].retention_days`. The day strip is reconstructed from those
+  transitions, so it costs no extra storage per check.
+  `[display].history_days` cannot exceed the retention.
+- **Thresholds:** `[display].major_outage_minutes` decides yellow versus red
+  for a day; `[display].degraded_response_ms` decides when a healthy but slow
+  response shows as Degraded.
 - **Upgrading:** pull, then re-run the same installer. Config, database and
   token are kept.
 - **Database:** SQLite in WAL mode at `[storage].db_path`. Back it up by

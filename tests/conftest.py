@@ -22,6 +22,9 @@ db_path = "{tmp_path / "data" / "aggregator.db"}"
 interval_seconds = 30
 timeout_seconds = 5
 
+[history]
+retention_days = 90
+
 [logging]
 path = "{tmp_path / "logs" / "aggregator.log"}"
 {extra}

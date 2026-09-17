@@ -24,7 +24,13 @@ from service_status_aggregator.config import (
 from service_status_aggregator.logging_setup import setup_logging
 from service_status_aggregator.netbind import BindError, port_in_use, resolve_bind
 from service_status_aggregator.poller import Poller
-from service_status_aggregator.storage import SOURCE_SELF, Storage, utcnow
+from service_status_aggregator.storage import (
+    META_LAST_CYCLE,
+    SOURCE_SELF,
+    Storage,
+    from_iso,
+    utcnow,
+)
 from service_status_aggregator.web.app import RuntimeState, create_app
 
 log = logging.getLogger("service_status_aggregator")
@@ -48,12 +54,12 @@ async def _wait(stop: asyncio.Event, seconds: float) -> bool:
         return False
 
 
-async def self_register_task(state: RuntimeState, stop: asyncio.Event) -> None:
+def self_record(state: RuntimeState) -> dict[str, object]:
     cfg = state.cfg
     host = state.bind_ip or "127.0.0.1"
     url_host = f"[{host}]" if ":" in host else host
     base = f"http://{url_host}:{cfg.server.port}"
-    record = {
+    return {
         "name": SELF_NAME,
         "host": host,
         "port": cfg.server.port,
@@ -61,6 +67,11 @@ async def self_register_task(state: RuntimeState, stop: asyncio.Event) -> None:
         "log_path": str(cfg.logging.path),
         "config_page_url": f"{base}/config",
     }
+
+
+async def self_register_task(state: RuntimeState, stop: asyncio.Event) -> None:
+    cfg = state.cfg
+    record = self_record(state)
     while not stop.is_set():
         try:
             await asyncio.to_thread(state.storage.upsert_registration, record, source=SOURCE_SELF)
@@ -97,6 +108,39 @@ async def watchdog_task(state: RuntimeState, poller: Poller, stop: asyncio.Event
             log.error("withholding watchdog ping: poller unhealthy (%s)", detail)
         if await _wait(stop, tick):
             return
+
+
+def detect_monitoring_gap(state: RuntimeState) -> int:
+    """If the aggregator was not running for a while, mark every service unknown for that gap.
+
+    Otherwise the last stored status would silently stretch across the downtime and the
+    history strip would show green for a period nobody was watching. Returns the number
+    of services marked.
+    """
+    raw = state.storage.get_meta(META_LAST_CYCLE)
+    if raw is None:
+        return 0
+    last = from_iso(raw)
+    if last is None:
+        return 0
+    interval = state.cfg.polling.interval_seconds
+    gap = (utcnow() - last).total_seconds()
+    if gap <= 3 * interval:
+        return 0
+    gap_start = last + timedelta(seconds=interval)
+    reason = f"aggregator not running for {int(gap // 60)} min"
+    marked = 0
+    for svc in state.storage.list_services():
+        if state.storage.mark_unknown(svc.id, at=gap_start, reason=reason):
+            marked += 1
+    if marked:
+        log.warning(
+            "monitoring gap of %.0f min detected (last cycle %s); %d service(s) marked unknown",
+            gap / 60,
+            raw,
+            marked,
+        )
+    return marked
 
 
 async def ready_task(server: uvicorn.Server, state: RuntimeState) -> None:
@@ -160,6 +204,12 @@ async def serve(cfg: Config, state: RuntimeState) -> int:
         )
     )
     stop = asyncio.Event()
+    await asyncio.to_thread(detect_monitoring_gap, state)
+    if cfg.registration.register_self:
+        # Register before the first poll cycle so the aggregator's own row is checked at once.
+        await asyncio.to_thread(
+            state.storage.upsert_registration, self_record(state), source=SOURCE_SELF
+        )
     poller = Poller(state)
     state.poller = poller
     tasks = [
