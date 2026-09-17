@@ -52,13 +52,14 @@ other service's config, any write UI beyond `/register`, TLS termination
 | Staleness window | 900 s default (3 missed 5-minute re-registrations) | default |
 | Stale handling | Computed at read time, never stored, never deleted | spec |
 | Registration auth | Shared bearer token, **required by default** | owner (Q1) |
-| Poll-target restriction | `health_url` host must equal registered `host`; resolved IP must be inside `allowed_target_cidrs` | Q9 default |
+| Poll-target restriction | `health_url` host must equal registered `host`; resolved IP must be inside `allowed_target_cidrs` (default: Tailscale ranges + loopback only) | owner (Q9) |
 | History | `services` row holds latest values; `status_events` table stores transitions only, pruned after 90 days | owner (Q6) |
 | Removal of dead entries | CLI subcommand only, no HTTP delete | owner (Q7) |
 | Self-listing | Aggregator registers its own row (`register_self = true`) | owner (Q5) |
-| Non-tailnet services | Optional `[[static_services]]` entries in the TOML; the aggregator re-registers them itself each cycle so they are polled and never stale (see §8) | Q11 default |
+| Non-tailnet services | Not supported. Every monitored service lives on the owner's private tailnet or on the aggregator host itself. | owner (Q11/Q12) |
 | Target host | Latest Ubuntu LTS (systemd ≥ 255, Python 3.12 available); uv still pins the interpreter | owner (Q4) |
-| CI | GitHub Actions: ruff + pytest only, on push and PR. Build/test only, not deployment. ~1 min per run; free on public repos, well inside the 2000 min/month free tier on private ones. | owner (Q10) |
+| CI | GitHub Actions: ruff + pytest on push and PR. Build/test only, not deployment. Repo is public, so minutes are free. | owner (Q10/Q13) |
+| Public repo | Nothing secret is ever committed: no tokens, no `.env`, no databases, no logs. See §3.11. | owner (Q13) |
 | Logging | Plain text, `RotatingFileHandler`, 5 MiB × 5 by default; also stderr when not a daemon | spec |
 | Secrets | systemd: `LoadCredentialEncrypted` via `systemd-creds`; venv/Docker: `.env` | spec |
 | Docker network | `--network host` (needed to bind the Tailscale IP and reach tailnet peers) | owner (Q3) |
@@ -87,8 +88,10 @@ guardrails v1 must implement; the owner's preferences favour secure defaults.
    - if `host` is an IP literal it must fall inside `allowed_target_cidrs`;
      if it is a hostname, resolve it at registration time **and** at each poll
      and require every resolved address to be inside the allowlist;
-   - default allowlist: `100.64.0.0/10` (Tailscale CGNAT), `127.0.0.0/8`,
-     `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fd00::/8`;
+   - default allowlist: `100.64.0.0/10` (Tailscale CGNAT IPv4),
+     `fd7a:115c:a1e0::/48` (Tailscale IPv6), `127.0.0.0/8`, `::1/128`. RFC1918
+     ranges are deliberately **not** in the default; the owner runs everything
+     on the tailnet, and widening the allowlist is an explicit config change;
    - redirects are **not** followed; `GET` only; no request headers beyond
      `User-Agent`; response body capped at 64 KiB and discarded.
 3. **`log_path` is display-only.** The aggregator stores and shows the string;
@@ -107,13 +110,19 @@ guardrails v1 must implement; the owner's preferences favour secure defaults.
 9. **Loopback fallback is loud.** If bind resolves to `127.0.0.1`, log a
    WARNING with the SSH tunnel command every startup, not just once.
 10. **Pinned dependencies.** Commit `uv.lock`. Keep the dependency list short.
+11. **Public repository hygiene.** The repo is public. `.gitignore` already
+    excludes `.env`, `*.db`, `*.log` and `.venv`; keep it that way and add
+    `*.db-wal`, `*.db-shm`, `config.toml` (only `config.example.toml` is
+    tracked). Installers generate tokens at install time and write them only
+    to `/etc/credstore.encrypted` or a mode-600 `.env` outside the checkout.
+    CI needs no secrets. Never paste a real Tailscale IP, hostname or token
+    into docs or tests; use `100.64.0.0/10` documentation addresses like
+    `100.100.100.100`.
 
-**Non-tailnet services.** The aggregator binds only to its Tailscale IP, so a
-service that is not on the tailnet cannot reach `/register`. Polling in the
-other direction still works (outbound from the host). Such services are
-described statically in the TOML (§8) instead of self-registering. Their
-health URLs must still pass the allowlist; a service on a public IP needs its
-address added to `allowed_target_cidrs` explicitly, never a wildcard.
+**Everything is on the tailnet.** The aggregator binds only to its Tailscale
+IP, so a service must be on the tailnet (or on the aggregator host) to reach
+`/register`. The owner has confirmed all monitored services will be. No
+static-registration path is built; if one is ever needed it is a later phase.
 
 **Tailscale identity as auth (later).** The owner suggested using Tailscale as
 the trust boundary. `tailscale whois <src-ip>` can identify the registering
@@ -186,7 +195,7 @@ CREATE TABLE IF NOT EXISTS services (
   first_registered_at   TEXT    NOT NULL,          -- ISO-8601 UTC
   last_registered_at    TEXT    NOT NULL,
   registration_count    INTEGER NOT NULL DEFAULT 1,
-  source                TEXT    NOT NULL DEFAULT 'register',  -- register|static|self
+  source                TEXT    NOT NULL DEFAULT 'register',  -- register|self
   last_status           TEXT    NOT NULL DEFAULT 'unknown',  -- up|down|unknown
   last_checked_at       TEXT,
   last_response_ms      REAL,
@@ -324,22 +333,11 @@ max_concurrent = 10
 [registration]
 staleness_seconds = 900
 require_token = true
-allowed_target_cidrs = ["100.64.0.0/10", "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fd00::/8"]
+allowed_target_cidrs = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "127.0.0.0/8", "::1/128"]
 register_self = true
 
 [history]
 retention_days = 90
-
-# Services that cannot self-register (not on the tailnet). The aggregator
-# re-registers these itself every poll cycle, so they are never stale.
-# Same field rules as POST /register (§6); host must match health_url's host.
-[[static_services]]
-name = "nas"
-host = "192.168.1.20"
-port = 5000
-health_url = "http://192.168.1.20:5000/health"
-log_path = ""
-config_page_url = "http://192.168.1.20:5000/"
 
 [logging]
 path = "/var/log/service_status_aggregator/aggregator.log"
@@ -349,8 +347,6 @@ backup_count = 5
 ```
 
 Validation at load: positive intervals, `timeout < interval`, port range,
-each `[[static_services]]` entry passes the §6 validators (including the
-allowlist),
 parseable CIDRs, bind is `auto`/`tailscale`/IP and **not** `0.0.0.0`/`::`,
 db and log directories exist and are writable (create the file, not the dir).
 Any failure ⇒ exit 2 listing every problem, not just the first.
@@ -533,8 +529,8 @@ connection refused⇒down, transition rows only on change, `/health` 503 when
 poller cycle is overdue, one failing target does not stop the cycle.
 
 **Phase 3 — web.** Templates, `/`, `/api/services`, `/config` (redacted),
-stale computation, sort order, banners, `register_self`, `[[static_services]]`
-seeding with `source` label shown on the page.
+stale computation, sort order, banners, `register_self` with the `source`
+label shown on the page.
 *Accept:* rendered page contains each service exactly once; stale badge appears
 when `last_registered_at` is old; token never appears in `/config` output;
 CSP header present on every response.
@@ -622,19 +618,19 @@ Answered by the owner on 2026-09-17 (applied throughout this document):
 | Q9 | Not all monitored services are on the tailnet today. Handled by `[[static_services]]` (Q11) and the allowlist. Tailscale-identity auth noted as a later phase. |
 | Q10 | CI wanted as long as it costs nothing: ruff + pytest only. |
 
-Remaining questions (defaults apply until answered):
+| Q11 | No static-registration path; every service will be on the tailnet. |
+| Q12 | All services live on the owner's private network / private tailnet. Default allowlist narrowed to Tailscale ranges and loopback. |
+| Q13 | Repo is public. No secrets may ever be committed (§3.11). CI minutes are free. |
 
-| # | Question | Default if unanswered |
-|---|---|---|
-| Q11 | For services not on the tailnet, describe them as `[[static_services]]` in the TOML so they are polled without self-registering? | **Yes.** |
-| Q12 | Where do those non-tailnet services live: LAN (RFC1918), same host (loopback), or public internet? Public IPs must be added to `allowed_target_cidrs` one by one. | LAN and loopback only; no public targets. |
-| Q13 | Is this GitHub repo public or private? Only affects whether CI minutes are metered at all. | Assume private, keep CI to ~1 min per run. |
+**No questions remain open. The plan is final for v1.**
 
 ## 18. Deferred (do not build in v1)
 
 - Two-way capability query protocol.
 - Tailscale-identity authentication for `/register` (`tailscale whois`) as an
   alternative to the shared token.
+- Static (config-file) registrations for services that cannot reach the
+  aggregator over the tailnet.
 - ntfy (or any) alerting.
 - Config editing UI; HTTP delete; per-service auth; TLS (`tailscale serve` can
   front it later); IPv6 bind; uptime percentages; reading other services' logs.
