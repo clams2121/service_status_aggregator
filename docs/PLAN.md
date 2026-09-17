@@ -1,7 +1,8 @@
 # Service Status Aggregator — v1 Implementation Plan
 
-Status: **plan only, nothing implemented yet.** This document is the handoff for
-whichever model or person builds v1. Read it fully before writing code.
+Status: **implemented (v1).** All six phases in §14 are built and tested. This
+document remains the design reference; the README is the user-facing guide.
+Deviations from the plan during implementation are listed in §19.
 
 How to use this plan:
 
@@ -634,3 +635,22 @@ Answered by the owner on 2026-09-17 (applied throughout this document):
 - ntfy (or any) alerting.
 - Config editing UI; HTTP delete; per-service auth; TLS (`tailscale serve` can
   front it later); IPv6 bind; uptime percentages; reading other services' logs.
+
+---
+
+## 19. Implementation notes (deviations from the plan)
+
+- Added a `healthcheck` CLI subcommand: Docker's `HEALTHCHECK` and the
+  installers need to probe the resolved bind address without knowing it.
+- Docker keeps the token in a file mounted read-only and read through
+  `$CREDENTIALS_DIRECTORY`, the same code path as systemd, instead of an
+  environment variable. `deploy/docker/.env` holds only the storage dir and
+  UID/GID.
+- uvicorn re-raises SIGTERM after a graceful shutdown, which would have made
+  every `systemctl stop` look like a failure. The runtime installs its own
+  asyncio signal handlers so a clean stop exits 0.
+- `examples/register_client.py` (stdlib only) ships for other services to copy.
+- Docker image build is not exercised in CI (no daemon in the build
+  environment and the owner wanted CI kept minimal); the Dockerfile and
+  compose file were reviewed but not run here. Run `deploy/docker/install.sh`
+  on the host to verify.
