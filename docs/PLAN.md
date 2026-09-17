@@ -41,26 +41,30 @@ other service's config, any write UI beyond `/register`, TLS termination
 | Topic | Decision | Source |
 |---|---|---|
 | Language / packaging | Python ≥ 3.11 (`tomllib`), `pyproject.toml`, `uv`, `uv.lock` committed | spec |
-| Web stack | FastAPI + uvicorn (single process, no workers) + httpx (async polling) + Jinja2 | Q8 default |
+| Web stack | FastAPI + uvicorn (single process, no workers) + httpx (async polling) + Jinja2. Chosen over Bottle for built-in request validation and async polling; owner is fine with either. | owner (Q8) |
 | Storage | stdlib `sqlite3`, WAL mode, `busy_timeout=5000`, single writer lock | default |
 | Config | One TOML file; missing/invalid ⇒ exit 2 with a clear message | spec |
 | Bind address | `auto`: Tailscale IPv4 if found, else `127.0.0.1` + SSH-tunnel note. **Never `0.0.0.0`.** | spec |
-| Default port | `8720` | Q4 default |
+| Default port | `8720` (does not collide with OpenClaw's default gateway port 18789). Installers and `check-config` verify the port is free before starting. | owner (Q4) |
 | Poll interval | 30 s default, configurable | spec |
 | Poll timeout | 5 s default, configurable | default |
 | Healthy response | HTTP 200 only; everything else is `down` | spec |
 | Staleness window | 900 s default (3 missed 5-minute re-registrations) | default |
 | Stale handling | Computed at read time, never stored, never deleted | spec |
-| Registration auth | Shared bearer token, **required by default** | Q1 default |
+| Registration auth | Shared bearer token, **required by default** | owner (Q1) |
 | Poll-target restriction | `health_url` host must equal registered `host`; resolved IP must be inside `allowed_target_cidrs` | Q9 default |
-| History | `services` row holds latest values; `status_events` table stores transitions only, pruned after 90 days | Q6 default |
-| Removal of dead entries | CLI subcommand only, no HTTP delete | Q7 default |
+| History | `services` row holds latest values; `status_events` table stores transitions only, pruned after 90 days | owner (Q6) |
+| Removal of dead entries | CLI subcommand only, no HTTP delete | owner (Q7) |
+| Self-listing | Aggregator registers its own row (`register_self = true`) | owner (Q5) |
+| Non-tailnet services | Optional `[[static_services]]` entries in the TOML; the aggregator re-registers them itself each cycle so they are polled and never stale (see §8) | Q11 default |
+| Target host | Latest Ubuntu LTS (systemd ≥ 255, Python 3.12 available); uv still pins the interpreter | owner (Q4) |
+| CI | GitHub Actions: ruff + pytest only, on push and PR. Build/test only, not deployment. ~1 min per run; free on public repos, well inside the 2000 min/month free tier on private ones. | owner (Q10) |
 | Logging | Plain text, `RotatingFileHandler`, 5 MiB × 5 by default; also stderr when not a daemon | spec |
 | Secrets | systemd: `LoadCredentialEncrypted` via `systemd-creds`; venv/Docker: `.env` | spec |
-| Docker network | `--network host` (needed to bind the Tailscale IP and reach tailnet peers) | Q3 default |
+| Docker network | `--network host` (needed to bind the Tailscale IP and reach tailnet peers) | owner (Q3) |
 | systemd | `Type=notify`, READY + WATCHDOG via `$NOTIFY_SOCKET` (no dependency), `Restart=on-failure`, `RestartSec=10`, `StartLimitIntervalSec=300`, `StartLimitBurst=5` | spec |
 | Service user | `svcstatus` system user, no login shell, on all three paths | default |
-| Paths | `/opt/service_status_aggregator` (code), `/etc/service_status_aggregator/config.toml`, `/var/lib/service_status_aggregator` (db), `/var/log/service_status_aggregator` (log) | Q4 default |
+| Paths | `/opt/service_status_aggregator` (code), `/etc/service_status_aggregator/config.toml`, `/var/lib/service_status_aggregator` (db), `/var/log/service_status_aggregator` (log) | owner (Q4) |
 | License | AGPL-3.0 (already in repo); mirror in `pyproject.toml` | repo |
 
 ---
@@ -103,6 +107,19 @@ guardrails v1 must implement; the owner's preferences favour secure defaults.
 9. **Loopback fallback is loud.** If bind resolves to `127.0.0.1`, log a
    WARNING with the SSH tunnel command every startup, not just once.
 10. **Pinned dependencies.** Commit `uv.lock`. Keep the dependency list short.
+
+**Non-tailnet services.** The aggregator binds only to its Tailscale IP, so a
+service that is not on the tailnet cannot reach `/register`. Polling in the
+other direction still works (outbound from the host). Such services are
+described statically in the TOML (§8) instead of self-registering. Their
+health URLs must still pass the allowlist; a service on a public IP needs its
+address added to `allowed_target_cidrs` explicitly, never a wildcard.
+
+**Tailscale identity as auth (later).** The owner suggested using Tailscale as
+the trust boundary. `tailscale whois <src-ip>` can identify the registering
+node and would remove the shared token for tailnet peers. Deferred to a later
+phase (§18); the bearer token stays for v1 because it also covers same-host
+registrants and is one line for integrators.
 
 Residual risks to state in the README: DNS rebinding between the two resolve
 checks is possible but low value on a tailnet; anyone on the tailnet can read
@@ -169,6 +186,7 @@ CREATE TABLE IF NOT EXISTS services (
   first_registered_at   TEXT    NOT NULL,          -- ISO-8601 UTC
   last_registered_at    TEXT    NOT NULL,
   registration_count    INTEGER NOT NULL DEFAULT 1,
+  source                TEXT    NOT NULL DEFAULT 'register',  -- register|static|self
   last_status           TEXT    NOT NULL DEFAULT 'unknown',  -- up|down|unknown
   last_checked_at       TEXT,
   last_response_ms      REAL,
@@ -312,6 +330,17 @@ register_self = true
 [history]
 retention_days = 90
 
+# Services that cannot self-register (not on the tailnet). The aggregator
+# re-registers these itself every poll cycle, so they are never stale.
+# Same field rules as POST /register (§6); host must match health_url's host.
+[[static_services]]
+name = "nas"
+host = "192.168.1.20"
+port = 5000
+health_url = "http://192.168.1.20:5000/health"
+log_path = ""
+config_page_url = "http://192.168.1.20:5000/"
+
 [logging]
 path = "/var/log/service_status_aggregator/aggregator.log"
 level = "INFO"
@@ -320,6 +349,8 @@ backup_count = 5
 ```
 
 Validation at load: positive intervals, `timeout < interval`, port range,
+each `[[static_services]]` entry passes the §6 validators (including the
+allowlist),
 parseable CIDRs, bind is `auto`/`tailscale`/IP and **not** `0.0.0.0`/`::`,
 db and log directories exist and are writable (create the file, not the dir).
 Any failure ⇒ exit 2 listing every problem, not just the first.
@@ -426,7 +457,8 @@ registering service.
 ## 12. Deployment paths and install scripts
 
 All scripts: `set -euo pipefail`, run as root via sudo, idempotent, print each
-step, never echo the token, finish by curling `/health` on the resolved bind
+step, never echo the token, check that the configured port is not already
+listening (`ss -ltn`) and abort with the offending process if it is, finish by curling `/health` on the resolved bind
 and printing the status page URL. Shared helper `deploy/common.sh` for user
 creation, directory creation, and Tailscale IP display.
 
@@ -501,7 +533,8 @@ connection refused⇒down, transition rows only on change, `/health` 503 when
 poller cycle is overdue, one failing target does not stop the cycle.
 
 **Phase 3 — web.** Templates, `/`, `/api/services`, `/config` (redacted),
-stale computation, sort order, banners, `register_self`.
+stale computation, sort order, banners, `register_self`, `[[static_services]]`
+seeding with `source` label shown on the page.
 *Accept:* rendered page contains each service exactly once; stale badge appears
 when `last_registered_at` is old; token never appears in `/config` output;
 CSP header present on every response.
@@ -572,26 +605,36 @@ from the owner's Prompt 2 is the auth header and the exact endpoint/port):
 
 ---
 
-## 17. Open questions for the owner (defaults apply until answered)
+## 17. Decisions log and remaining questions
+
+Answered by the owner on 2026-09-17 (applied throughout this document):
+
+| # | Answer |
+|---|---|
+| Q1 | Token required by default. |
+| Q2 | No template to mirror; layout in this plan stands. |
+| Q3 | Docker host networking accepted. |
+| Q4 | Latest Ubuntu; port 8720 status unknown, so installers verify it is free; standard paths exist. |
+| Q5 | Aggregator lists itself. |
+| Q6 | Transitions table, 90-day retention. |
+| Q7 | CLI-only removal. |
+| Q8 | Owner usually uses Bottle but accepted the FastAPI stack. |
+| Q9 | Not all monitored services are on the tailnet today. Handled by `[[static_services]]` (Q11) and the allowlist. Tailscale-identity auth noted as a later phase. |
+| Q10 | CI wanted as long as it costs nothing: ruff + pytest only. |
+
+Remaining questions (defaults apply until answered):
 
 | # | Question | Default if unanswered |
 |---|---|---|
-| Q1 | Require a shared bearer token on `/register` by default? It adds one header to every integrating service (Prompt 2 changes accordingly). | **Yes, required.** |
-| Q2 | Is there an existing "standard project template" or sibling service repo whose layout, logging setup and `/health` shape this should mirror? | None; use this plan's layout. |
-| Q3 | Docker with `--network host` acceptable? Bridge mode cannot bind the host's Tailscale IP without `0.0.0.0` inside the container and breaks MagicDNS. | Host networking. |
-| Q4 | Target host distro / systemd version / Python version, and preferred port and paths? `LoadCredentialEncrypted` needs systemd ≥ 250. | Debian/Ubuntu, systemd ≥ 250, uv-managed Python 3.12, port 8720, paths in §2. |
-| Q5 | Should the aggregator show itself as a row (`register_self`)? | Yes. |
-| Q6 | Keep a transitions-only history table (bounded), or strictly latest-status-only? | Transitions table, 90-day retention. |
-| Q7 | Removal of decommissioned entries via CLI only (no HTTP delete)? | CLI only. |
-| Q8 | FastAPI + uvicorn + httpx + Jinja2 acceptable, or a preference for a lighter stack? | FastAPI stack. |
-| Q9 | Poll-target allowlist: are all services inside Tailscale CGNAT / RFC1918 / loopback? Any that legitimately return a non-200 healthy code (e.g. 204)? | Allowlist as in §8; 200 only. |
-| Q10 | GitHub Actions CI (ruff + pytest + docker build) wanted in this repo? | Yes. |
-
----
+| Q11 | For services not on the tailnet, describe them as `[[static_services]]` in the TOML so they are polled without self-registering? | **Yes.** |
+| Q12 | Where do those non-tailnet services live: LAN (RFC1918), same host (loopback), or public internet? Public IPs must be added to `allowed_target_cidrs` one by one. | LAN and loopback only; no public targets. |
+| Q13 | Is this GitHub repo public or private? Only affects whether CI minutes are metered at all. | Assume private, keep CI to ~1 min per run. |
 
 ## 18. Deferred (do not build in v1)
 
 - Two-way capability query protocol.
+- Tailscale-identity authentication for `/register` (`tailscale whois`) as an
+  alternative to the shared token.
 - ntfy (or any) alerting.
 - Config editing UI; HTTP delete; per-service auth; TLS (`tailscale serve` can
   front it later); IPv6 bind; uptime percentages; reading other services' logs.
